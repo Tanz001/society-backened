@@ -13,7 +13,8 @@ const {
 } = require("../../controllers/society/societyController.js");
 const {
   createEventRequest,
-  getEventRequestsBySociety
+  getEventRequestsBySociety,
+  getEventRequestStatusHistory
 } = require("../../controllers/event/eventRequestController.js");
 const authMiddleware = require("../../middleware/authMiddleware.js");
 const { uploadMiddleware } = require("../../middleware/uploadPost.js");
@@ -46,5 +47,21 @@ router.post("/event-request/create", createEventRequest);
 
 // Get event requests by society
 router.post("/event-request/list", getEventRequestsBySociety);
+
+// Get event request status history (for society owner)
+router.get("/event-request/:event_req_id/history", getEventRequestStatusHistory); // GET /society/event-request/:event_req_id/history
+
+// ============ EVENT REPORT ROUTES ============
+const {
+  uploadEventReport,
+  getEventReportsByEventId
+} = require("../../controllers/event/eventReportController.js");
+const uploadReport = require("../../middleware/uploadReport.js");
+
+// Upload event report (society owner)
+router.post("/event-report/upload", uploadReport, uploadEventReport); // POST /society/event-report/upload
+
+// Get event reports by event request ID
+router.get("/event-report/event/:event_req_id", getEventReportsByEventId); // GET /society/event-report/event/:event_req_id
 
 module.exports = router;

@@ -465,6 +465,8 @@ const getSocietyEvents = async (req, res) => {
         event_date,
         NULL as event_time,
         NULL as venue,
+        10 as status_id,
+        'Active' as status_name,
         'approved' as status,
         'events' as source_table,
         NULL as created_at
@@ -474,22 +476,25 @@ const getSocietyEvents = async (req, res) => {
       [society_id]
     );
 
-    // Get events from event_req table where status_id = 7
+    // Get events from event_req table where status_id >= 10 (Active or Complete)
     const [eventReqRows] = await pool.execute(
       `SELECT 
-        req_id as id,
-        society_id,
-        title,
-        description,
-        event_date,
-        event_time,
-        venue,
+        er.req_id as id,
+        er.society_id,
+        er.title,
+        er.description,
+        er.event_date,
+        er.event_time,
+        er.venue,
+        er.status_id,
+        ss.status_name,
         'approved' as status,
         'event_req' as source_table,
-        created_at
-      FROM event_req 
-      WHERE society_id = ? AND status_id = 7
-      ORDER BY event_date ASC`,
+        er.created_at
+      FROM event_req er
+      LEFT JOIN society_statuses ss ON er.status_id = ss.status_id
+      WHERE er.society_id = ? AND er.status_id >= 10
+      ORDER BY er.event_date ASC`,
       [society_id]
     );
 

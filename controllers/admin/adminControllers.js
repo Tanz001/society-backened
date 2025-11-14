@@ -232,17 +232,17 @@ const updateSocietyStatus = async (req, res) => {
     }
 };
 
-// Society Board: Approve or Reject (status 1 -> 2 or 3)
-const boardUpdateStatus = async (req, res) => {
+// Board Secretary: Approve or Reject (status 1 -> 2 or 3)
+const boardSecretaryUpdateStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { action, note, changed_by } = req.body; // action: 'approve' or 'reject'
     
-    const status_id = action === 'approve' ? 2 : 3; // 2: Approved by Society Board, 3: Rejected by Society Board
+    const status_id = action === 'approve' ? 2 : 3; // 2: Approved by Board Secretary, 3: Rejected by Board Secretary
     
-    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Society Board');
+    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Board Secretary', 1);
   } catch (error) {
-    console.error("Error in board status update:", error);
+    console.error("Error in board secretary status update:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error"
@@ -250,15 +250,38 @@ const boardUpdateStatus = async (req, res) => {
   }
 };
 
-// Registrar: Approve or Reject (status 2 -> 4 or 5)
+// Board President: Approve or Reject (status 2 -> 4 or 5)
+const boardPresidentUpdateStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { action, note, changed_by } = req.body; // action: 'approve' or 'reject'
+    
+    const status_id = action === 'approve' ? 4 : 5; // 4: Approved by Board President, 5: Rejected by Board President
+    
+    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Board President', 2);
+  } catch (error) {
+    console.error("Error in board president status update:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+// Legacy: Society Board (same as Board Secretary)
+const boardUpdateStatus = async (req, res) => {
+  return boardSecretaryUpdateStatus(req, res);
+};
+
+// Registrar: Approve or Reject (status 4 -> 6 or 7)
 const registrarUpdateStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { action, note, changed_by } = req.body; // action: 'approve' or 'reject'
     
-    const status_id = action === 'approve' ? 4 : 5; // 4: Approved by Registrar, 5: Rejected by Registrar
+    const status_id = action === 'approve' ? 6 : 7; // 6: Approved by Registrar, 7: Rejected by Registrar
     
-    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Registrar');
+    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Registrar', 4);
   } catch (error) {
     console.error("Error in registrar status update:", error);
     res.status(500).json({
@@ -268,15 +291,15 @@ const registrarUpdateStatus = async (req, res) => {
   }
 };
 
-// Vice Chancellor: Approve or Reject (status 4 -> 6 or 7)
+// Vice Chancellor: Approve or Reject (status 6 -> 8 or 9, then auto-set to 10 if approved)
 const vcUpdateStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const { action, note, changed_by } = req.body; // action: 'approve' or 'reject'
     
-    const status_id = action === 'approve' ? 6 : 7; // 6: Approved by VC, 7: Rejected by VC
+    const status_id = action === 'approve' ? 8 : 9; // 8: Approved by VC, 9: Rejected by VC
     
-    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Vice Chancellor');
+    await updateSocietyStatusInternal(id, status_id, note, changed_by, res, 'Vice Chancellor', 6, action === 'approve');
   } catch (error) {
     console.error("Error in VC status update:", error);
     res.status(500).json({
@@ -287,7 +310,7 @@ const vcUpdateStatus = async (req, res) => {
 };
 
 // Internal helper function for status updates
-const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res, role) => {
+const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res, role, expectedCurrentStatus, setActiveAfterVC = false) => {
   if (!id || isNaN(id)) {
     return res.status(400).json({
       success: false,
@@ -322,6 +345,19 @@ const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res,
     const currentStatus = societyRows[0].status_id;
     const societyUserId = societyRows[0].user_id;
 
+    // Validate that current status matches expected status for this role
+    if (expectedCurrentStatus && currentStatus !== expectedCurrentStatus) {
+      await pool.query('ROLLBACK');
+      const [currentStatusRow] = await pool.query(
+        "SELECT status_name FROM society_statuses WHERE status_id = ?",
+        [currentStatus]
+      );
+      return res.status(400).json({
+        success: false,
+        message: `Invalid status. Society is currently "${currentStatusRow[0]?.status_name || 'Unknown'}" and cannot be reviewed by ${role}.`
+      });
+    }
+
     // Validate status transition
     if (!isValidStatusTransition(currentStatus, status_id)) {
       await pool.query('ROLLBACK');
@@ -343,12 +379,28 @@ const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res,
       [id, status_id, changed_by, note || null]
     );
 
-    // If status is "Approved by VC" (status_id = 6), mark user as society owner
-    if (status_id === 6) {
+    let finalStatusId = status_id;
+    
+    // If VC approved (status_id = 8), automatically set to Active (10) and mark user as society owner
+    if (setActiveAfterVC && status_id === 8) {
+      await pool.query(
+        "UPDATE societies SET status_id = 10, updated_at = CURRENT_TIMESTAMP WHERE society_id = ?",
+        [id]
+      );
+      
+      // Add Active status to history
+      await pool.query(
+        "INSERT INTO society_status_history (society_id, status_id, changed_by, remarks, changed_at) VALUES (?, 10, ?, 'Automatically set to Active after VC approval', CURRENT_TIMESTAMP)",
+        [id, changed_by]
+      );
+      
+      // Mark user as society owner
       await pool.query(
         "UPDATE students SET society_owner = 1 WHERE id = ?",
         [societyUserId]
       );
+      
+      finalStatusId = 10; // Update for response
     }
 
     await pool.query('COMMIT');
@@ -356,7 +408,7 @@ const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res,
     // Get status name for response
     const [statusRows] = await pool.query(
       "SELECT status_name FROM society_statuses WHERE status_id = ?",
-      [status_id]
+      [finalStatusId]
     );
 
     res.json({
@@ -364,7 +416,7 @@ const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res,
       message: `Society status updated successfully by ${role}`,
       data: {
         society_id: parseInt(id),
-        status_id: status_id,
+        status_id: finalStatusId,
         status_name: statusRows[0]?.status_name || 'Unknown',
         note: note || null
       }
@@ -379,15 +431,94 @@ const updateSocietyStatusInternal = async (id, status_id, note, changed_by, res,
 // Validation function for status transitions
 const isValidStatusTransition = (currentStatus, newStatus) => {
   const validTransitions = {
-    1: [2, 3], // Pending -> Approved by Board or Rejected by Board
-    2: [4, 5], // Approved by Board -> Approved by Registrar or Rejected by Registrar
-    4: [6, 7], // Approved by Registrar -> Approved by VC or Rejected by VC
+    1: [2, 3], // Pending -> Approved by Board Secretary or Rejected by Board Secretary
+    2: [4, 5], // Approved by Board Secretary -> Approved by Board President or Rejected by Board President
+    4: [6, 7], // Approved by Board President -> Approved by Registrar or Rejected by Registrar
+    6: [8, 9], // Approved by Registrar -> Approved by VC or Rejected by VC
+    8: [10],   // Approved by VC -> Active (automatic)
   };
   
   return validTransitions[currentStatus]?.includes(newStatus) || false;
 };
 
 // Get all status options
+// Get allowed statuses for a specific role and current status
+const getAllowedStatuses = async (req, res) => {
+  try {
+    const { role, current_status_id } = req.query;
+    
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        message: "Role is required"
+      });
+    }
+
+    let allowedStatusIds = [];
+    
+    // Determine which statuses each role can set based on current status
+    switch (role.toLowerCase()) {
+      case "board_secretary":
+        // Can only approve (2) or reject (3) from Pending (1)
+        if (current_status_id == 1) {
+          allowedStatusIds = [2, 3];
+        }
+        break;
+      case "board_president":
+        // Can only approve (4) or reject (5) from Approved by Board Secretary (2)
+        if (current_status_id == 2) {
+          allowedStatusIds = [4, 5];
+        }
+        break;
+      case "registrar":
+        // Can only approve (6) or reject (7) from Approved by Board President (4)
+        if (current_status_id == 4) {
+          allowedStatusIds = [6, 7];
+        }
+        break;
+      case "vc":
+        // Can only approve (8) or reject (9) from Approved by Registrar (6)
+        if (current_status_id == 6) {
+          allowedStatusIds = [8, 9];
+        }
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          message: "Invalid role provided"
+        });
+    }
+
+    if (allowedStatusIds.length === 0) {
+      return res.json({
+        success: true,
+        message: "No allowed statuses for this role and current status",
+        statuses: []
+      });
+    }
+
+    // Get status details
+    const placeholders = allowedStatusIds.map(() => '?').join(',');
+    const [statusRows] = await pool.query(
+      `SELECT status_id, status_name, description FROM society_statuses WHERE status_id IN (${placeholders})`,
+      allowedStatusIds
+    );
+
+    res.json({
+      success: true,
+      message: "Allowed statuses retrieved successfully",
+      statuses: statusRows
+    });
+
+  } catch (error) {
+    console.error("Error fetching allowed statuses:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error fetching allowed statuses"
+    });
+  }
+};
+
 const getAllStatuses = async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT * FROM society_statuses ORDER BY status_id");
@@ -451,21 +582,40 @@ const getSocietiesByRole = async (req, res) => {
 
     let statusIds = [];
 
-    // Determine which statuses each role can access
+    // Determine which statuses each role can view
+    // Each role sees:
+    // 1. Their pending status (what they need to review)
+    // 2. Higher statuses (to track what happened after their approval)
+    // They do NOT see rejected statuses from lower levels
     switch (role.toLowerCase()) {
+      case "board_secretary":
+        // See: Pending (1) to review, and Approved statuses (2, 4, 6, 8, 10, 11) to track progress
+        // Do NOT see: Rejected statuses (3, 5, 7, 9) - these stop the flow
+        statusIds = [1, 2, 4, 6, 8, 10, 11];
+        break;
+      case "board_president":
+        // See: Approved by Secretary (2) to review, and higher approved statuses (4, 6, 8, 10, 11) to track
+        // Do NOT see: Pending (1) or Rejected by Secretary (3) or lower rejections
+        statusIds = [2, 4, 6, 8, 10, 11];
+        break;
       case "society_board":
-        statusIds = [1, 2, 3];
+        // Legacy support - same as board_secretary
+        statusIds = [1, 2, 4, 6, 8, 10, 11];
         break;
       case "registrar":
-        statusIds = [2, 4, 5];
+        // See: Approved by President (4) to review, and higher approved statuses (6, 8, 10, 11) to track
+        // Do NOT see: Lower statuses (1, 2, 3, 5)
+        statusIds = [4, 6, 8, 10, 11];
         break;
       case "vc":
-        statusIds = [4, 6, 7];
+        // See: Approved by Registrar (6) to review, and higher approved statuses (8, 10, 11) to track
+        // Do NOT see: Lower statuses (1, 2, 3, 4, 5, 7)
+        statusIds = [6, 8, 10, 11];
         break;
       default:
         return res.status(400).json({
           success: false,
-          message: "Invalid role provided. Use 'society_board', 'registrar', or 'vc'."
+          message: "Invalid role provided. Use 'board_secretary', 'board_president', 'registrar', or 'vc'."
         });
     }
 
@@ -477,7 +627,15 @@ const getSocietiesByRole = async (req, res) => {
       LEFT JOIN society_statuses ss ON s.status_id = ss.status_id
       LEFT JOIN students st ON s.user_id = st.id
       WHERE s.status_id IN (${placeholders})
-      ORDER BY s.created_at DESC
+      ORDER BY 
+        CASE 
+          WHEN s.status_id = 1 THEN 1  -- Pending first for board_secretary
+          WHEN s.status_id = 2 THEN 2   -- Approved by Secretary first for board_president
+          WHEN s.status_id = 4 THEN 3   -- Approved by President first for registrar
+          WHEN s.status_id = 6 THEN 4   -- Approved by Registrar first for vc
+          ELSE 5                        -- Other statuses
+        END,
+        s.created_at DESC
     `;
 
     const [rows] = await pool.query(sql, statusIds);
@@ -1121,8 +1279,11 @@ module.exports = {
   getSocietyById,
   updateSocietyStatus,
   boardUpdateStatus,
+  boardSecretaryUpdateStatus,
+  boardPresidentUpdateStatus,
   registrarUpdateStatus,
   vcUpdateStatus,
+  getAllowedStatuses,
   getAllStatuses,
   getSocietyStatusHistory,
   getSocietiesByRole,

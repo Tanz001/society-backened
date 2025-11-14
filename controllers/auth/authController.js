@@ -78,8 +78,7 @@ const registerStudent = async (req, res) => {
           major,
           phone,
           degree,
-          semester,
-          role
+          semester
         }
       });
   
@@ -128,19 +127,25 @@ const registerStudent = async (req, res) => {
         });
       }
   
-      // ✅ Call stored procedure
-      const [results] = await pool.execute("SELECT * FROM students WHERE email = ?", [email]);
+      // ✅ Query students table with roles join to get role_id and role_name
+      const [results] = await pool.execute(
+        `SELECT s.*, r.role_id, r.role_name, r.display_name, r.description as role_description 
+         FROM students s 
+         LEFT JOIN roles r ON s.role_id = r.role_id 
+         WHERE s.email = ?`,
+        [email]
+      );
       const student = results[0];
-  
+
       if (!student) {
         return res.status(401).json({
           success: false,
           message: "Invalid email or password",
         });
       }
-  
+
       console.log("Student data fetched from DB:", student);
-  
+
       // ✅ Compare password
       const isMatch = await bcrypt.compare(password, student.password);
       if (!isMatch) {
@@ -149,7 +154,7 @@ const registerStudent = async (req, res) => {
           message: "Invalid email or password",
         });
       }
-  
+
       // ✅ Generate JWT
       const JWT_SECRET = process.env.JWT_SECRET || "yourSuperSecretKey";
       const token = jwt.sign(
@@ -157,7 +162,7 @@ const registerStudent = async (req, res) => {
         JWT_SECRET,
         { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
       );
-  
+
       // ✅ Normalize RollNO field (to avoid case mismatch)
       const rollNumber =
         student.RollNO ||
@@ -167,8 +172,8 @@ const registerStudent = async (req, res) => {
         null;
 
         console.log("Roll number:", rollNumber);
-  
-      // ✅ Final Response
+
+      // ✅ Final Response with role_id and role_name
       res.status(200).json({
         success: true,
         message: "Student logged in successfully",
@@ -186,7 +191,9 @@ const registerStudent = async (req, res) => {
           admin: student.admin,
           society_owner: student.society_owner,
           RollNO: rollNumber, // ✅ Roll number will now always appear here
-          role:student.role
+          role_id: student.role_id || null, // ✅ Role ID from roles table
+          role_name: student.role_name || null, // ✅ Role name from roles table
+          role: student.role_name || student.role || null // ✅ Keep role for backward compatibility
         },
       });
     } catch (error) {
